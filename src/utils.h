@@ -52,6 +52,7 @@ float variance_array(float *a, int n);
 float mag_array(float *a, int n);
 float dist_array(float *a, float *b, int n, int sub);
 float **one_hot_encode(float *a, int n, int k);
+float msec(clock_t clocks);
 float sec(clock_t clocks);
 int find_int_arg(int argc, char **argv, char *arg, int def);
 float find_float_arg(int argc, char **argv, char *arg, float def);
@@ -59,6 +60,7 @@ int find_arg(int argc, char* argv[], char *arg);
 char *find_char_arg(int argc, char **argv, char *arg, char *def);
 int sample_array(float *a, int n);
 void print_statistics(float *a, int n);
-
+double get_wall_time_ms();
+double get_wall_time_us();
 #endif
 

@@ -667,6 +667,9 @@ network parse_network_cfg(char *filename)
         }
         l.dontload = option_find_int_quiet(options, "dontload", 0);
         l.dontloadscales = option_find_int_quiet(options, "dontloadscales", 0);
+        l.idx = count;
+        // l.timing0 = l.timing1 = l.timing2 = l.timing3 = l.timing4 = l.timing5 = l.timing6 = .0;
+        // memset(l.timings, 0, 10*sizeof(float));
         option_unused(options);
         net.layers[count] = l;
         if (l.workspace_size > workspace_size) workspace_size = l.workspace_size;

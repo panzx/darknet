@@ -4,6 +4,32 @@
 #include <stdlib.h>
 #include <stdio.h>
 #include <math.h>
+#include "im2col.h"
+
+char shouldCacncle(int h, int w)
+{
+    return (h+w)%2==0;
+}
+
+
+void setIndicator(int height_col, int width_col, int *indicator)
+{
+    int h, w, cancelOffset = 0;
+    for (h = 0; h < height_col; ++h) {
+        for (w = 0; w < width_col; ++w) {
+            if (shouldCacncle(h, w)) {
+                cancelOffset++;
+                indicator[h*width_col+w] = 0-cancelOffset;
+            }
+            else {
+                indicator[h*width_col+w] = cancelOffset;
+            }
+            // printf("%4d ", indicator[h*width_col+w]);
+        }
+        // printf("\n");
+    }
+    // printf("\n");
+}
 
 void gemm_bin(int M, int N, int K, float ALPHA, 
         char  *A, int lda, 
@@ -25,6 +51,52 @@ void gemm_bin(int M, int N, int K, float ALPHA,
             }
         }
     }
+}
+
+void printMatrix(const char *tag, float *matrix, int rows, int cols, int channels)
+{
+    int c, y , t, x;
+    printf("%s (%d,%d,%d)\n", tag, channels, rows, cols);
+    for (c = 0; c < channels; c++) {
+        for (y = 0; y < rows; ++y) {
+            for (t = 0; t < c; t++) printf("\t");
+            for (x = 0; x < cols; ++x) {
+                printf("%2.0f ", matrix[(c*rows+y)*cols + x]);
+            }
+            printf("\n");
+        }
+    }
+    printf("\n");
+}
+
+float *matrix(int rows, int cols, int channels)
+{
+    float *m; 
+    cudaError_t status = cudaHostAlloc((void **)&m, rows*cols*channels*sizeof(float), cudaHostAllocMapped);
+    check_error(status);
+    status = cudaMemset((void *)m, 0, rows*cols*channels*sizeof(float));
+    check_error(status);
+    return m;
+}
+
+float *increMatrix(int rows, int cols, int channels)
+{
+    int i;
+    float *m = matrix(rows, cols, channels);
+    for(i = 0; i < channels*rows*cols; ++i){
+        m[i] = (float)i+1;
+    }
+    return m;
+}
+
+float *onesMatrix(int rows, int cols, int channels)
+{
+    int i;
+    float *m = matrix(rows, cols, channels);
+    for(i = 0; i < channels*rows*cols; ++i){
+        m[i] = 1.0;
+    }
+    return m;
 }
 
 float *random_matrix(int rows, int cols)
@@ -226,7 +298,7 @@ void time_gpu_random_matrix(int TA, int TB, int m, int k, int n)
 
 void time_ongpu(int TA, int TB, int m, int k, int n)
 {
-    int iter = 10;
+    int iter = 100;
     float *a = random_matrix(m,k);
     float *b = random_matrix(k,n);
 
@@ -240,16 +312,20 @@ void time_ongpu(int TA, int TB, int m, int k, int n)
     float *c_cl = cuda_make_array(c, m*n);
 
     int i;
-    clock_t start = clock(), end;
+    double t1, t2;
+    t1 = get_wall_time_us();
     for(i = 0; i<iter; ++i){
         gemm_ongpu(TA,TB,m,n,k,1,a_cl,lda,b_cl,ldb,1,c_cl,n);
         cudaThreadSynchronize();
     }
+    t2 = get_wall_time_us();
     double flop = ((double)m)*n*(2.*k + 2.)*iter;
     double gflop = flop/pow(10., 9);
-    end = clock();
-    double seconds = sec(end-start);
-    printf("Matrix Multiplication %dx%d * %dx%d, TA=%d, TB=%d: %lf s, %lf GFLOPS\n",m,k,k,n, TA, TB, seconds, gflop/seconds);
+    // end = clock();
+    // double seconds = sec(end-start);
+    double mySec = (t2-t1)/1000/1000;
+    printf("Matrix Multiplication %dx%d * %dx%d, TA=%d, TB=%d: %lfs, %lf(%f) gflops\n", 
+        m, k, k, n, TA, TB, mySec, gflop, gflop/mySec);
     cuda_free(a_cl);
     cuda_free(b_cl);
     cuda_free(c_cl);
@@ -258,6 +334,93 @@ void time_ongpu(int TA, int TB, int m, int k, int n)
     free(c);
 }
 
+void time_ongpu_compresess(int TA, int TB, int m, int k, int out_h, int out_w, int factor)
+{
+    int iter = 100;
+    int n = out_h * out_w;
+    int n2 = n / factor;
+    float *a = random_matrix(m,k);
+    float *b = random_matrix(k,n);
+
+    int lda = (!TA)?k:m;
+    int ldb = (!TB)?n2:k;
+
+    float *c = random_matrix(m,n);
+
+    float *a_cl = cuda_make_array(a, m*k);
+    float *b_cl = cuda_make_array(b, k*n2);
+    float *c2_cl = cuda_make_array(c, m*n2);
+    float *c_cl = cuda_make_array(c, m*n);
+    int *indicator;
+    cudaHostAlloc((void **)&indicator, out_h*out_w*sizeof(int), cudaHostAllocMapped);
+    setIndicator(out_h, out_w, indicator);
+
+    int i;
+    double t1, t2;
+    t1 = get_wall_time_us();
+    for(i = 0; i<iter; ++i){
+        gemm_ongpu(TA,TB,m,n2,k,1,a_cl,lda,b_cl,ldb,1,c2_cl,n2);
+        cudaThreadSynchronize();
+        resizeImg_ongpu(c2_cl, m, out_h, out_w, indicator, c_cl);
+        cudaThreadSynchronize();
+    }
+    t2 = get_wall_time_us();
+    double flop = ((double)m)*n2*(2.*k + 2.)*iter;
+    double gflop = flop/pow(10., 9);
+    // end = clock();
+    // double seconds = sec(end-start);
+    double mySec = (t2-t1)/1000/1000;
+    printf("Matrix Multiplication %dx%d * %dx%d(%d factor%d), TA=%d, TB=%d: %lfs, %lf(%f) gflops\n", 
+        m, k, k, n2, n, factor, TA, TB, mySec, gflop, gflop/mySec);
+    cuda_free(a_cl);
+    cuda_free(b_cl);
+    cuda_free(c2_cl);
+    cuda_free(c_cl);
+    cudaFreeHost(indicator);
+    free(a);
+    free(b);
+    free(c);
+}
+
+void time_ongpu_im2col() {
+    int iter = 100;
+    // int m = 3; //核数
+    int size = 3; //核size
+    int c = 1024; //图片通道
+    int k = size*size*c; //gemm K
+    int h = 15; //输入h
+    int w = 20; //输入w
+    int pad = size/2; //补位
+    int stride = 1;
+    int out_h = (h + 2*pad - size) / stride + 1; //输出h
+    int out_w = (w + 2*pad - size) / stride + 1; //输出w
+
+    float *img = increMatrix(h, w, c);
+    float *imgCol = matrix(k, h*w, 1);
+
+    int *indicator;
+    cudaError_t status = cudaHostAlloc((void **)&indicator, out_h*out_w*sizeof(int), cudaHostAllocMapped);
+    check_error(status);
+    setIndicator(out_h, out_w, indicator);
+
+    double t1, t2;
+    int i;
+    t1 = get_wall_time_us();
+    for(i = 0; i<iter; ++i){
+        im2col_ongpu(img, c, h, w, size, stride, pad, imgCol);
+        cudaThreadSynchronize();
+    }
+    t2 = get_wall_time_us();
+    printf("im2col_ongpu %.1fms\n", (t2-t1)/1000);
+
+    t1 = get_wall_time_us();
+    for(i = 0; i<iter; ++i){
+        im2col_ongpu3(img, c, h, w, size, stride, pad, indicator, imgCol);
+        cudaThreadSynchronize();
+    }
+    t2 = get_wall_time_us();
+    printf("im2col_ongpu3 %.1fms\n", (t2-t1)/1000);
+}
 
 void test_gpu_accuracy(int TA, int TB, int m, int k, int n)
 {
@@ -298,40 +461,82 @@ void test_gpu_accuracy(int TA, int TB, int m, int k, int n)
 
 int test_gpu_blas()
 {
-    /*
-       test_gpu_accuracy(0,0,10,576,75); 
+    // time_ongpu(0, 0, 16, 3*3*3, 320*240);
+    // printf("\n");
+    time_ongpu_im2col();
+    // time_ongpu(0, 0, 512, 3*3*512, 20*15);
+    // time_ongpu_compresess(0, 0, 512, 3*3*512, 20, 15, 2);
+    // time_ongpu_compresess(0, 0, 512, 3*3*512, 20, 15, 5);
+    // time_ongpu_compresess(0, 0, 512, 3*3*512, 20, 15, 10);
+    printf("\n");
 
-       test_gpu_accuracy(0,0,17,10,10); 
-       test_gpu_accuracy(1,0,17,10,10); 
-       test_gpu_accuracy(0,1,17,10,10); 
-       test_gpu_accuracy(1,1,17,10,10); 
+    // time_ongpu(0, 0, 1024, 3*3*1024, 20*15/2); 
+    // time_ongpu(0, 0, 1024, 3*3*1024/2, 20*15);
+    // time_ongpu(0, 0, 1024/2, 3*3*1024, 20*15);
+    // printf("\n");
 
-       test_gpu_accuracy(0,0,1000,10,100); 
-       test_gpu_accuracy(1,0,1000,10,100); 
-       test_gpu_accuracy(0,1,1000,10,100); 
-       test_gpu_accuracy(1,1,1000,10,100); 
+    // time_ongpu(0, 0, 1024, 3*3*1024, 20*15/10); 
+    // time_ongpu(0,0,1024,3*3*1024,10*15); 
+    // time_ongpu(0,0,1024,3*3*1024,2*15); 
+     
+    // time_ongpu(0,0,1024,3*3*512,10*15); 
+    // time_ongpu(0,0,1024,3*3*512,2*15); 
+    return 0;
+}
 
-       test_gpu_accuracy(0,0,10,10,10); 
+int test_gpu_blas1()
+{
+    int m = 3; //核数
+    int size = 3; //核size
+    int c = 2; //图片通道
+    int k = size*size*c; //gemm K
+    int h = 4; //输入h
+    int w = 4; //输入w
+    int pad = size/2; //补位
+    int stride = 1;
+    int out_h = (h + 2*pad - size) / stride + 1; //输出h
+    int out_w = (w + 2*pad - size) / stride + 1; //输出w
+    int n = out_h*out_w; //gemm 输出大小
 
-       time_ongpu(0,0,64,2916,363); 
-       time_ongpu(0,0,64,2916,363); 
-       time_ongpu(0,0,64,2916,363); 
-       time_ongpu(0,0,192,729,1600); 
-       time_ongpu(0,0,384,196,1728); 
-       time_ongpu(0,0,256,196,3456); 
-       time_ongpu(0,0,256,196,2304); 
-       time_ongpu(0,0,128,4096,12544); 
-       time_ongpu(0,0,128,4096,4096); 
-     */
-    time_ongpu(0,0,64,75,12544); 
-    time_ongpu(0,0,64,75,12544); 
-    time_ongpu(0,0,64,75,12544); 
-    time_ongpu(0,0,64,576,12544); 
-    time_ongpu(0,0,256,2304,784); 
-    time_ongpu(1,1,2304,256,784); 
-    time_ongpu(0,0,512,4608,196); 
-    time_ongpu(1,1,4608,512,196); 
+    float *img = increMatrix(h, w, c);
+    printMatrix("img inittial", img, h, w, c);
+    float *imgCol = matrix(k, out_h*out_w, 1);
 
+    // im2col
+    // im2col_ongpu(img, c, h, w, size, stride, pad, imgCol);
+    // cudaThreadSynchronize();
+    // printMatrix("im2col", imgCol, k, out_h*out_w, 1);
+
+    // im2col show compress
+    im2col_ongpu2(img, c, h, w, size, stride, pad, imgCol);
+    cudaThreadSynchronize();
+    printMatrix("im2col show compress", imgCol, k, out_h*out_w, 1);
+
+    int *indicator;
+    cudaHostAlloc((void **)&indicator, out_h*out_w*sizeof(int), cudaHostAllocMapped);
+    setIndicator(out_h, out_w, indicator);
+
+    // im2col compress
+    im2col_ongpu3(img, c, h, w, size, stride, pad, indicator, imgCol);
+    cudaThreadSynchronize();
+    printMatrix("im2col compress", imgCol, k, out_h*out_w+indicator[out_h*out_w-1], 1);
+    n += indicator[out_h*out_w-1];
+
+    // 卷积核
+    float *convKernel = onesMatrix(m, k, 1);
+    printMatrix("kernel", convKernel, 1, k, m);
+    
+    // gemm
+    float *gemm = matrix(n*m, 1, 1);
+    gemm_ongpu(0, 0, m, n, k, 1, 
+        convKernel, k, imgCol, n, 0., gemm, n);
+    cudaThreadSynchronize();
+    printMatrix("gemm", gemm, out_h, out_w, m);
+
+    float *gemmResized = matrix(out_h*out_w*m, 1, 1);
+    resizeImg_ongpu(gemm, m, out_h, out_w, indicator, gemmResized);
+    cudaThreadSynchronize();
+    printMatrix("gemm resized", gemmResized, out_h, out_w, m);
     return 0;
 }
 #endif

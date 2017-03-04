@@ -41,7 +41,21 @@ typedef enum{
     SSE, MASKED, SMOOTH
 } COST_TYPE;
 
+// // // pzx: pack for cudnn v2
+// #ifdef CUDNN
+
+// // // typedef int cudnnConvolutionBwdFilterAlgo_t;
+// // // typedef int cudnnConvolutionBwdDataAlgo_t;
+
+// #define cudnnSetFilter4dDescriptor(x1, x2, x3, x4, x5, x6, x7) cudnnSetFilter4dDescriptor(x1, x2, x4, x5, x6, x7)
+// #define cudnnConvolutionBackwardFilter(x1, x2, x3, x4, x5, x6, x7, x8, x9, x10, x11, x12, x13) cudnnConvolutionBackwardFilter(x1, x2, x3, x4, x5, x6, x7, x11, x12, x13)
+// #define cudnnConvolutionBackwardData(x1, x2, x3, x4, x5, x6, x7, x8, x9, x10, x11, x12, x13) cudnnConvolutionBackwardData(x1, x2, x3, x4, x5, x6, x7, x11, x12, x13)
+
+// #endif
+
 struct layer{
+    int idx;
+    float *timings;
     LAYER_TYPE type;
     ACTIVATION activation;
     COST_TYPE cost_type;

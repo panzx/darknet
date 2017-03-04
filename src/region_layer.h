@@ -4,6 +4,7 @@
 #include "layer.h"
 #include "network.h"
 
+// #undef GPU
 layer make_region_layer(int batch, int h, int w, int n, int classes, int coords);
 void forward_region_layer(const layer l, network_state state);
 void backward_region_layer(const layer l, network_state state);
@@ -14,5 +15,6 @@ void resize_region_layer(layer *l, int w, int h);
 void forward_region_layer_gpu(const layer l, network_state state);
 void backward_region_layer_gpu(layer l, network_state state);
 #endif
+// #define GPU
 
 #endif

@@ -8,7 +8,7 @@
 #include <assert.h>
 #include <string.h>
 #include <stdlib.h>
-
+// #undef GPU
 layer make_region_layer(int batch, int w, int h, int n, int classes, int coords)
 {
     layer l = {0};
@@ -24,6 +24,7 @@ layer make_region_layer(int batch, int w, int h, int n, int classes, int coords)
     l.biases = calloc(n*2, sizeof(float));
     l.bias_updates = calloc(n*2, sizeof(float));
     l.outputs = h*w*n*(classes + coords + 1);
+    printf("region_layer %d %d*%d*%d*(%d + %d + 1) = %d\n", batch, h, w, n, classes, coords, l.outputs);
     l.inputs = l.outputs;
     l.truths = 30*(5);
     l.delta = calloc(batch*l.outputs, sizeof(float));
@@ -35,10 +36,12 @@ layer make_region_layer(int batch, int w, int h, int n, int classes, int coords)
 
     l.forward = forward_region_layer;
     l.backward = backward_region_layer;
+
 #ifdef GPU
     l.forward_gpu = forward_region_layer_gpu;
-    l.backward_gpu = backward_region_layer_gpu;
-    l.output_gpu = cuda_make_array(l.output, batch*l.outputs);
+    l.backward_gpu = backward_region_layer_gpu; 
+    cudaHostAlloc((void **) &l.output_gpu, batch*l.outputs*sizeof(float), cudaHostAllocMapped);
+    // l.output_gpu = cuda_make_array(l.output, batch*l.outputs);
     l.delta_gpu = cuda_make_array(l.delta, batch*l.outputs);
 #endif
 
@@ -146,6 +149,9 @@ void forward_region_layer(const layer l, network_state state)
         }
     }
 
+    // printf("logistic_activate %d %d %d\n", l.h, l.w, l.n);
+    // printImg_ongpu(l.output_gpu, l.h*l.w, 6, 0);
+    // cudaThreadSynchronize();
 
 #ifndef GPU
     if (l.softmax_tree){
@@ -312,6 +318,7 @@ void get_region_boxes(layer l, int w, int h, float thresh, float **probs, box *b
             int index = i*l.n + n;
             int p_index = index * (l.classes + 5) + 4;
             float scale = predictions[p_index];
+            // float scale = ((row+col)%2)?predictions[p_index]:.0;
             int box_index = index * (l.classes + 5);
             boxes[index] = get_region_box(predictions, l.biases, n, box_index, col, row, l.w, l.h);
             boxes[index].x *= w;
@@ -342,6 +349,11 @@ void get_region_boxes(layer l, int w, int h, float thresh, float **probs, box *b
             if(only_objectness){
                 probs[index][0] = scale;
             }
+            if ((row+col) % 2 == 0) {
+                probs[index][0] = 0.0;
+            }
+            // printf("%d %d (%.0f, %.0f) (%.0f,%.0f) %.1f\n",row, col, boxes[index].x*320, 
+            //     boxes[index].y*240, boxes[index].w*320, boxes[index].h*240, probs[index][0]*100);
         }
     }
 }
@@ -356,7 +368,23 @@ void forward_region_layer_gpu(const layer l, network_state state)
        return;
        }
      */
+    // printf("before %d %d %d\n", l.h, l.w, l.n);
+    // for (int i = 0; i < 6; ++i)
+    // {
+    //     printImg_ongpu(state.input, l.h, l.w, i);
+    //     cudaThreadSynchronize();
+    // }
+
+    // printf("%d %d %d\n", l.n, l.coords, l.classes);
     flatten_ongpu(state.input, l.h*l.w, l.n*(l.coords + l.classes + 1), l.batch, 1, l.output_gpu);
+
+    // printf("flatten_ongpu %d %d %d\n", l.h, l.w, l.n);
+    // printImg_ongpu(l.output_gpu, l.h*l.w, 6, 0);
+    // cudaThreadSynchronize();
+
+    // printf("flatten_ongpu %d %d %d\n", l.h, l.w, l.n);
+    // printImg_ongpu(l.output_gpu, l.h*l.w, 6, 0);
+
     if(l.softmax_tree){
         int i;
         int count = 5;
@@ -366,24 +394,51 @@ void forward_region_layer_gpu(const layer l, network_state state)
             count += group_size;
         }
     }else if (l.softmax){
+        // double t1 = get_wall_time_ms();
         softmax_gpu(l.output_gpu+5, l.classes, l.classes + 5, l.w*l.h*l.n*l.batch, 1, l.output_gpu + 5);
+        // double t2 = get_wall_time_ms();
+        // printf("softmax_gpu(%d %d %d %d %d) %.3fms\n", l.classes, l.w, l.h, l.n, l.batch, t2-t1);
     }
+    // printf("softmax_gpu %d %d %d\n", l.h, l.w, l.n);
+    // printImg_ongpu(l.output_gpu, l.h*l.w, 6, 0);
+    // cudaThreadSynchronize();
 
-    float *in_cpu = calloc(l.batch*l.inputs, sizeof(float));
+    // float *in_cpu = calloc(l.batch*l.inputs, sizeof(float));
+    // static float *in_cpu2 = NULL;
+    // if (!in_cpu2) {
+    //     cudaHostAlloc((void **) &in_cpu2, l.batch*l.inputs*sizeof(float), cudaHostAllocMapped);
+    // }
     float *truth_cpu = 0;
     if(state.truth){
         int num_truth = l.batch*l.truths;
         truth_cpu = calloc(num_truth, sizeof(float));
         cuda_pull_array(state.truth, truth_cpu, num_truth);
     }
-    cuda_pull_array(l.output_gpu, in_cpu, l.batch*l.inputs);
+    // double t1 = get_wall_time_ms();
+    // cuda_pull_array(l.output_gpu, in_cpu2, l.batch*l.inputs);
+    // double t2 = get_wall_time_ms();
+    // printf("cudaMallocHost %.3fms\n", t2-t1);
+    // t1 = t2;
+    // cuda_pull_array(l.output_gpu, in_cpu2, l.batch*l.inputs);
+    // t2 = get_wall_time_ms();
+    // printf("cudaMallocHost %.3fms\n", t2-t1);
+    // cuda_pull_array(l.output_gpu+(13*6*6), in_cpu+(13*6*6), l.batch*l.inputs/13);
+    // t2 = get_wall_time_ms();
+    // printf("cuda_pull_array 2 %.3fms\n", t2-t1);
+    // t1 = t2;
+    // cuda_pull_array(l.output_gpu+(13*6*6), in_cpu+(13*7*6), l.batch*l.inputs/13);
+    // t2 = get_wall_time_ms();
+    // printf("cuda_pull_array 3 %.3fms\n\n", t2-t1);
+    // cuda_pull_array(l.output_gpu, in_cpu, 13*6);
+    // double t2 = get_wall_time_ms();
+    // printf("cuda_pull_array(%d %d %d) %.3fms\n", l.batch, l.inputs, t2-t1);
     network_state cpu_state = state;
     cpu_state.train = state.train;
     cpu_state.truth = truth_cpu;
-    cpu_state.input = in_cpu;
+    cpu_state.input = l.output_gpu;
     forward_region_layer(l, cpu_state);
     //cuda_push_array(l.output_gpu, l.output, l.batch*l.outputs);
-    free(cpu_state.input);
+    // cudaFreeHost(cpu_state.input);
     if(!state.train) return;
     cuda_push_array(l.delta_gpu, l.delta, l.batch*l.outputs);
     if(cpu_state.truth) free(cpu_state.truth);
@@ -395,3 +450,4 @@ void backward_region_layer_gpu(layer l, network_state state)
 }
 #endif
 
+// #define GPU

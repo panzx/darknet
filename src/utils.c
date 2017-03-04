@@ -166,6 +166,11 @@ void find_replace(char *str, char *orig, char *rep, char *output)
     sprintf(output, "%s%s%s", buffer, rep, p+strlen(orig));
 }
 
+float msec(clock_t clocks)
+{
+    return (float)clocks*1000/CLOCKS_PER_SEC;
+}
+
 float sec(clock_t clocks)
 {
     return (float)clocks/CLOCKS_PER_SEC;
@@ -621,5 +626,23 @@ float **one_hot_encode(float *a, int n, int k)
         t[i][index] = 1;
     }
     return t;
+}
+
+double get_wall_time_ms()
+{
+    struct timeval time;
+    if (gettimeofday(&time,NULL)){
+        return 0;
+    }
+    return (double)time.tv_sec * 1000 + (double)time.tv_usec * .001;
+}
+
+double get_wall_time_us()
+{
+    struct timeval time;
+    if (gettimeofday(&time,NULL)){
+        return 0;
+    }
+    return (double)time.tv_sec * 1000000 + (double)time.tv_usec;
 }
 

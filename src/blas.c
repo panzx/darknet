@@ -30,6 +30,8 @@ void reorg_cpu(float *x, int w, int h, int c, int batch, int stride, int forward
 
 void flatten(float *x, int size, int layers, int batch, int forward)
 {
+    //                      300     6         1
+    // flatten(l.output, l.w*l.h, size*l.n, l.batch, 1);
     float *swap = calloc(size*layers*batch, sizeof(float));
     int i,c,b;
     for(b = 0; b < batch; ++b){
@@ -37,6 +39,10 @@ void flatten(float *x, int size, int layers, int batch, int forward)
             for(i = 0; i < size; ++i){
                 int i1 = b*layers*size + c*size + i;
                 int i2 = b*layers*size + i*layers + c;
+                // printf("i1(%d) = c(%d)*size(%d) + i(%d)\n", 
+                //     i1, b, layers, size, c, size, i);
+                // printf("i2(%d) = i(%d)*layers(%d) + c(%d)\n", 
+                //     i1, b, layers, size, i, layers, c);
                 if (forward) swap[i2] = x[i1];
                 else swap[i1] = x[i2];
             }

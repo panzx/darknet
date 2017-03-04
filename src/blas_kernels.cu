@@ -562,6 +562,8 @@ __global__ void flatten_kernel(int N, float *x, int spatial, int layers, int bat
 
 extern "C" void flatten_ongpu(float *x, int spatial, int layers, int batch, int forward, float *out)
 {
+    //                            300           6                           1               
+    //flatten_ongpu(state.input, l.h*l.w, l.n*(l.coords + l.classes + 1), l.batch, 1, l.output_gpu);
     int size = spatial*batch*layers;
     flatten_kernel<<<cuda_gridsize(size), BLOCK>>>(size, x, spatial, layers, batch, forward, out);
     check_error(cudaPeekAtLastError());

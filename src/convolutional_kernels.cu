@@ -13,6 +13,32 @@ extern "C" {
 #include "cuda.h"
 }
 
+char shouldCacncle(int h, int w)
+{
+    return 0;
+    // return (h+w)%2==0;
+}
+
+
+void setIndicator(int height_col, int width_col, int *indicator)
+{
+    int h, w, cancelOffset = 0;
+    for (h = 0; h < height_col; ++h) {
+        for (w = 0; w < width_col; ++w) {
+            if (shouldCacncle(h, w)) {
+                cancelOffset++;
+                indicator[h*width_col+w] = 0-cancelOffset;
+            }
+            else {
+                indicator[h*width_col+w] = cancelOffset;
+            }
+            // printf("%4d ", indicator[h*width_col+w]);
+        }
+        // printf("\n");
+    }
+    // printf("\n");
+}
+
 __global__ void binarize_kernel(float *x, int n, float *binary)
 {
     int i = (blockIdx.x + blockIdx.y*gridDim.x) * blockDim.x + threadIdx.x;
@@ -70,9 +96,22 @@ void binarize_weights_gpu(float *weights, int n, int size, float *binary)
     check_error(cudaPeekAtLastError());
 }
 
+
 void forward_convolutional_layer_gpu(convolutional_layer l, network_state state)
-{
+{   
+    static float timings[15][10];
+    double t1, t2;
+    t1 = get_wall_time_us();
+    double flop;
+    // output:416*416*16, batch:1
+    // cudaMemset(l.output_gpu, 0, l.outputs*l.batch*sizeof(float));
     fill_ongpu(l.outputs*l.batch, 0, l.output_gpu, 1);
+    // cudaThreadSynchronize();
+    t2 = get_wall_time_us();
+    timings[l.idx][0] += t2-t1;
+    // printf("\t %lu %d %f %f\n", &l, l.idx, timings[l.idx][0], t2-t1);
+    t1 = t2;
+    
     if(l.binary){
         binarize_weights_gpu(l.weights_gpu, l.n, l.c*l.size*l.size, l.binary_weights_gpu);
         swap_binary(&l);
@@ -103,26 +142,120 @@ void forward_convolutional_layer_gpu(convolutional_layer l, network_state state)
 
 #else
     int i;
-    int m = l.n;
-    int k = l.size*l.size*l.c;
-    int n = l.out_w*l.out_h;
+    int m = l.n; //核数
+    int k = l.size*l.size*l.c; //核大小和通道
+    int n = l.out_w*l.out_h;    //输出w, h
     for(i = 0; i < l.batch; ++i){
-        im2col_ongpu(state.input + i*l.c*l.h*l.w, l.c,  l.h,  l.w,  l.size,  l.stride, l.pad, state.workspace);
-        float * a = l.weights_gpu;
-        float * b = state.workspace;
-        float * c = l.output_gpu;
-        gemm_ongpu(0,0,m,n,k,1.,a,k,b,n,1.,c+i*m*n,n);
+        if (l.idx >= 11)
+        // if (0)
+        {
+            static int *indicator = NULL;
+            if (indicator == NULL){
+                cudaHostAlloc((void **)&indicator, n*sizeof(int), cudaHostAllocMapped);
+                setIndicator(l.out_h, l.out_w, indicator);
+            }
+            int compressSize = indicator[l.out_h*l.out_w-1];
+            if (compressSize < 0)
+                compressSize = 0-compressSize;
+            im2col_ongpu3(state.input + i*l.c*l.h*l.w, l.c,  l.h,  l.w,  l.size,  l.stride, l.pad, indicator, state.workspace);
+            // im2col_ongpu(state.input + i*l.c*l.h*l.w, l.c,  l.h,  l.w,  l.size,  l.stride, l.pad, state.workspace);
+            
+            // cudaThreadSynchronize();
+            t2 = get_wall_time_us();
+            timings[l.idx][1] += t2-t1;
+            t1 = t2;
+
+            float * a = l.weights_gpu;
+            float * b = state.workspace;
+            float * c = l.delta_gpu;
+
+            n -= compressSize;
+
+            printf("\tMatrix Multiplication %dx%d * %dx<%d>\n",m,k,k,n);
+            t1 = get_wall_time_us();
+            gemm_ongpu(0,0,m,n,k,1.,a,k,b,n,1.,c+i*m*n,n);
+            // cudaThreadSynchronize();
+
+            resizeImg_ongpu(c, m, l.out_h, l.out_w, indicator, l.output_gpu);
+            // cudaThreadSynchronize();
+
+            t2 = get_wall_time_us();
+            timings[l.idx][2] += t2-t1;
+            t1 = t2;
+            flop = ((double)m)*n*(2.*k + 2.);
+        }
+        else {
+            im2col_ongpu(state.input + i*l.c*l.h*l.w, l.c,  l.h,  l.w,  l.size,  l.stride, l.pad, state.workspace);
+        
+            // cudaThreadSynchronize();
+            t2 = get_wall_time_us();
+            timings[l.idx][1] += t2-t1;
+            t1 = t2;
+
+            float * a = l.weights_gpu;
+            float * b = state.workspace;
+            float * c = l.output_gpu;
+
+            printf("\tMatrix Multiplication %dx%d * %dx%d\n",m,k,k,n);
+            t1 = get_wall_time_us();
+            gemm_ongpu(0,0,m,n,k,1.,a,k,b,n,1.,c+i*m*n,n);
+            // cudaThreadSynchronize();
+            t2 = get_wall_time_us();
+            timings[l.idx][2] += t2-t1;
+            t1 = t2;
+            flop = ((double)m)*n*(2.*k + 2.);
+        }       
     }
 #endif
+    // cudaMemset(l.output_gpu, 0, l.out_h*l.out_w*l.out_c);
 
     if (l.batch_normalize) {
         forward_batchnorm_layer_gpu(l, state);
+        // cudaThreadSynchronize();
+        // if (l.idx == 13) {
+        //     printf("bn\n");
+        //     printImg_ongpu(l.output_gpu, l.out_h, l.out_w, 0);
+        // }
     }
+    t2 = get_wall_time_us();
+    timings[l.idx][3] += t2-t1;
+    t1 = t2;
+
     add_bias_gpu(l.output_gpu, l.biases_gpu, l.batch, l.n, l.out_w*l.out_h);
+    // if (l.idx == 13) {
+    //     printf("bias\n");
+    //     printImg_ongpu(l.output_gpu, l.out_h, l.out_w, 0);
+    // }
+    // cudaThreadSynchronize();
+    t2 = get_wall_time_us();
+    timings[l.idx][4] += t2-t1;
+    t1 = t2;
 
     activate_array_ongpu(l.output_gpu, l.outputs*l.batch, l.activation);
+    // if (l.idx == 13) {
+    //     printf("activate\n");
+    //     printImg_ongpu(l.output_gpu, l.out_h, l.out_w, 0);
+    //     printf("hard code\n");
+    //     setImg_ongpu(l.output_gpu, l.out_h, l.out_w, l.n);
+    //     printImg_ongpu(l.output_gpu, l.out_h, l.out_w, 0);
+    // }
+
+    // cudaThreadSynchronize();
+    t2 = get_wall_time_us();
+    timings[l.idx][5] += t2-t1;
+    t1 = t2;
+
     //if(l.dot > 0) dot_error_gpu(l);
-    if(l.binary || l.xnor) swap_binary(&l);
+    if(l.binary || l.xnor){
+        swap_binary(&l);
+        // cudaThreadSynchronize();
+        t2 = get_wall_time_us();
+        timings[l.idx][6] += t2-t1;
+        t1 = t2;
+    } 
+    printf("\tConv %.0f %.0f %.0f %.0f %.0f %.0f %.0f\n", timings[l.idx][0]/1000, 
+        timings[l.idx][1]/1000, timings[l.idx][2]/1000, timings[l.idx][3]/1000, 
+        timings[l.idx][4]/1000, timings[l.idx][5]/1000, flop);
 }
 
 void backward_convolutional_layer_gpu(convolutional_layer l, network_state state)

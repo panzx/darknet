@@ -5,6 +5,7 @@ extern int gpu_index;
 
 #ifdef GPU
 
+// #define BLOCK 192
 #define BLOCK 512
 
 #include "cuda_runtime.h"

@@ -4,6 +4,7 @@
 
 extern "C" {
 #include <stdio.h>
+#include <sys/time.h>
 #include <time.h>
 #include <assert.h>
 
@@ -43,16 +44,27 @@ float * get_network_output_gpu(network net);
 void forward_network_gpu(network net, network_state state)
 {
     state.workspace = net.workspace;
+    static double allLayerTiming;
+    static double layerTimings[16];
+    static int countTime = 0;
+    printf("[%05d]\n", countTime++);
     int i;
     for(i = 0; i < net.n; ++i){
+        double layerTimeStart = get_wall_time_us();
         state.index = i;
         layer l = net.layers[i];
+        
         if(l.delta_gpu){
             fill_ongpu(l.outputs * l.batch, 0, l.delta_gpu, 1);
         }
         l.forward_gpu(l, state);
         state.input = l.output_gpu;
+        double useTime = get_wall_time_us()-layerTimeStart;
+        allLayerTiming += useTime;
+        layerTimings[i] += useTime;
+        printf("  %02d: %05d(%03d)ms\n", i, (int)layerTimings[i]/1000, (int)layerTimings[i]/countTime/1000);
     }
+    printf(" All: %05d(%03d)ms\n", (int)allLayerTiming/1000, (int)allLayerTiming/countTime/1000);
 }
 
 void backward_network_gpu(network net, network_state state)
@@ -389,20 +401,78 @@ float *get_network_output_gpu(network net)
     return get_network_output_layer_gpu(net, i);
 }
 
+
+
+float *cuda_copy_array(float *x_gpu, float *x, size_t n)
+{
+    size_t size = sizeof(float)*n;
+    if(x){
+        cudaError_t status = cudaMemcpy(x_gpu, x, size, cudaMemcpyHostToDevice);
+        check_error(status);
+    }
+    if(!x_gpu) error("Cuda malloc failed\n");
+    return x_gpu;
+}
+
+
 float *network_predict_gpu(network net, float *input)
 {
+    static double prdictTimings[5];
+    static int count;
+    int idx = 0;
+    count++;
+
+    double t1, t2;
+    t1 = get_wall_time_us();
+
     cuda_set_device(net.gpu_index);
     int size = get_network_input_size(net) * net.batch;
+
+    t2 = get_wall_time_us();
+    prdictTimings[idx++] += t2-t1;
+    t1 = t2;
+
     network_state state;
     state.index = 0;
     state.net = net;
-    state.input = cuda_make_array(input, size);
+
+    // printf("!!!!\n");
+    cudaHostGetDevicePointer((void **)&state.input,  (void *) input , 0);
+    // if (!state.input) {
+    //     printf("\t\tcuda_make_array\n");
+    //     state.input = cuda_make_array(input, size);
+    // }
+    // else {
+    //     printf("\t\tcuda_copy_array\n");
+    //     state.input = cuda_copy_array(state.input, input, size);
+    // }
+
+    // state.input = cuda_make_array(input, size);
+
     state.truth = 0;
     state.train = 0;
     state.delta = 0;
+    t2 = get_wall_time_us();
+    prdictTimings[idx++] += t2-t1;
+    t1 = t2;
+
     forward_network_gpu(net, state);
+
+    t2 = get_wall_time_us();
+    prdictTimings[idx++] += t2-t1;
+    t1 = t2;
+
     float *out = get_network_output_gpu(net);
-    cuda_free(state.input);
+    // cuda_free(state.input);
+
+    t2 = get_wall_time_us();
+    prdictTimings[idx++] += t2-t1;
+    t1 = t2;
+    printf("\tget_network_input_size %05d(%03d)\n", (int)prdictTimings[0]/1000, (int)prdictTimings[0]/count/1000);
+    printf("\tmake_array %05d(%03d)\n", (int)prdictTimings[1]/1000, (int)prdictTimings[1]/count/1000);
+    printf("\tforward_network_gpu %05d(%03d)\n", (int)prdictTimings[2]/1000, (int)prdictTimings[2]/count/1000);
+    printf("\tget_network_output_gpu %05d(%03d)\n", (int)prdictTimings[3]/1000, (int)prdictTimings[3]/count/1000);
+
     return out;
 }
 

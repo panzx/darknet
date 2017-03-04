@@ -186,25 +186,25 @@ void draw_detections(image im, int num, float thresh, box *boxes, float **probs,
         float prob = probs[i][class];
         if(prob > thresh){
 
-            int width = im.h * .012;
+            // int width = im.h * .012;
 
-            if(0){
-                width = pow(prob, 1./2.)*10+1;
-                alphabet = 0;
-            }
+            // if(0){
+            //     width = pow(prob, 1./2.)*10+1;
+            //     alphabet = 0;
+            // }
 
-            printf("%s: %.0f%%\n", names[class], prob*100);
+            // printf("%s: %.0f%%\n", names[class], prob*100);
             int offset = class*123457 % classes;
             float red = get_color(2,offset,classes);
             float green = get_color(1,offset,classes);
             float blue = get_color(0,offset,classes);
-            float rgb[3];
+            // float rgb[3];
 
             //width = prob*20+2;
 
-            rgb[0] = red;
-            rgb[1] = green;
-            rgb[2] = blue;
+            // rgb[0] = red;
+            // rgb[1] = green;
+            // rgb[2] = blue;
             box b = boxes[i];
 
             int left  = (b.x-b.w/2.)*im.w;
@@ -217,11 +217,11 @@ void draw_detections(image im, int num, float thresh, box *boxes, float **probs,
             if(top < 0) top = 0;
             if(bot > im.h-1) bot = im.h-1;
 
-            draw_box_width(im, left, top, right, bot, width, red, green, blue);
-            if (alphabet) {
-                image label = get_label(alphabet, names[class], (im.h*.03)/10);
-                draw_label(im, top + width, left, label, rgb);
-            }
+            draw_box_width(im, left, top, right, bot, 1, red, green, blue);
+            // if (alphabet) {
+            //     image label = get_label(alphabet, names[class], (im.h*.03)/10);
+            //     draw_label(im, top + width, left, label, rgb);
+            // }
         }
     }
 }
@@ -473,6 +473,24 @@ image ipl_to_image(IplImage* src)
     return out;
 }
 
+void ipl_to_image2(IplImage* src, image *out)
+{
+    unsigned char *data = (unsigned char *)src->imageData;
+    int h = src->height;
+    int w = src->width;
+    int c = src->nChannels;
+    int step = src->widthStep;
+    int i, j, k, count=0;;
+
+    for(k= 0; k < c; ++k){
+        for(i = 0; i < h; ++i){
+            for(j = 0; j < w; ++j){
+                out->data[count++] = data[i*step + j*c + k]/255.;
+            }
+        }
+    }
+}
+
 image load_image_cv(char *filename, int channels)
 {
     IplImage* src = 0;
@@ -506,6 +524,36 @@ image get_image_from_stream(CvCapture *cap)
     image im = ipl_to_image(src);
     rgbgr_image(im);
     return im;
+}
+
+char get_image_from_stream2(CvCapture *cap, IplImage **ipl, image *img)
+{
+    *ipl = cvQueryFrame(cap);
+    if (!ipl) 
+        return 0;
+    ipl_to_image2(*ipl, img);
+    rgbgr_image(*img);
+    return 1;
+}
+
+char get_image_from_stream3(CvCapture *cap, image *rawImg, image *resizedImg, int w, int h)
+{
+    IplImage* rawIpl, *resizeIpl;
+    rawIpl = cvQueryFrame(cap);
+    if (!rawIpl) 
+        return 0;
+
+    CvSize dstSize;
+    dstSize.width = w;  //目标图像的宽为源图象宽的scale倍  
+    dstSize.height = h;
+    resizeIpl = cvCreateImage(dstSize, rawIpl->depth, rawIpl->nChannels);  
+    cvResize(rawIpl, resizeIpl, CV_INTER_LINEAR);
+    ipl_to_image2(rawIpl, rawImg);
+    ipl_to_image2(resizeIpl, resizedImg);
+    cvReleaseImage(&resizeIpl);
+    rgbgr_image(*rawImg);
+    rgbgr_image(*resizedImg);
+    return 1;
 }
 
 void save_image_jpg(image p, const char *name)
@@ -589,9 +637,16 @@ image make_empty_image(int w, int h, int c)
 }
 
 image make_image(int w, int h, int c)
-{
+{   
     image out = make_empty_image(w,h,c);
     out.data = calloc(h*w*c, sizeof(float));
+    return out;
+}
+
+image make_zero_copy_image(int w, int h, int c)
+{
+    image out = make_empty_image(w,h,c);
+    cudaHostAlloc((void **)&out.data, h*w*c*sizeof(float), cudaHostAllocMapped);
     return out;
 }
 
@@ -1101,6 +1156,59 @@ image resize_image(image im, int w, int h)
     return resized;
 }
 
+void resize_image_with_zero_copy(image im, int w, int h, image *resizedImPtr)
+{
+    if (!resizedImPtr) {
+        *resizedImPtr = make_zero_copy_image(w, h, im.c);
+    }
+    else if (resizedImPtr->w != w || resizedImPtr->h != h || resizedImPtr->c != im.c)
+    {
+        free_zero_copy_image(*resizedImPtr);
+        *resizedImPtr = make_zero_copy_image(w, h, im.c);
+    }
+
+    image resized = *resizedImPtr;
+    image part = make_image(w, im.h, im.c);
+    int r, c, k;
+    float w_scale = (float)(im.w - 1) / (w - 1);
+    float h_scale = (float)(im.h - 1) / (h - 1);
+    for(k = 0; k < im.c; ++k){
+        for(r = 0; r < im.h; ++r){
+            for(c = 0; c < w; ++c){
+                float val = 0;
+                if(c == w-1 || im.w == 1){
+                    val = get_pixel(im, im.w-1, r, k);
+                } else {
+                    float sx = c*w_scale;
+                    int ix = (int) sx;
+                    float dx = sx - ix;
+                    val = (1 - dx) * get_pixel(im, ix, r, k) + dx * get_pixel(im, ix+1, r, k);
+                }
+                set_pixel(part, c, r, k, val);
+            }
+        }
+    }
+    for(k = 0; k < im.c; ++k){
+        for(r = 0; r < h; ++r){
+            float sy = r*h_scale;
+            int iy = (int) sy;
+            float dy = sy - iy;
+            for(c = 0; c < w; ++c){
+                float val = (1-dy) * get_pixel(part, c, iy, k);
+                set_pixel(resized, c, r, k, val);
+            }
+            if(r == h-1 || im.h == 1) continue;
+            for(c = 0; c < w; ++c){
+                float val = dy * get_pixel(part, c, iy+1, k);
+                add_pixel(resized, c, r, k, val);
+            }
+        }
+    }
+
+    free_image(part);
+    // return resized;
+}
+
 
 void test_resize(char *filename)
 {
@@ -1353,3 +1461,12 @@ void free_image(image m)
         free(m.data);
     }
 }
+
+void free_zero_copy_image(image m)
+{
+    if(m.data){
+        cudaFreeHost(m.data);
+    }
+}
+
+
